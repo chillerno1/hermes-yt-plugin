@@ -35,3 +35,6 @@ jobs:
 
       - name: Updater contract
         run: node .github/scripts/check-updater.mjs
+
+      - name: Settings contract
+        run: node .github/scripts/check-settings.mjs

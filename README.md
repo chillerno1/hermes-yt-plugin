@@ -1,7 +1,7 @@
 <h1 align="center">hermes-yt-plugin</h1>
 
 <p align="center">
-  A compact, floating YouTube player for the Hermes Desktop client.
+  A compact, floating or docked YouTube player for the Hermes Desktop client.
 </p>
 
 <p align="center">
@@ -27,6 +27,14 @@ directly.
     <td align="center"><strong>Compact player</strong></td>
     <td align="center"><strong>Expandable library</strong></td>
   </tr>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/docked-player.png" alt="YouTube player docked in a Hermes layout column"></td>
+    <td width="50%"><img src="docs/screenshots/docked-layout.png" alt="Docked YouTube player above a native Hermes review pane"></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>Docked player</strong></td>
+    <td align="center"><strong>Native layout integration</strong></td>
+  </tr>
 </table>
 
 ## Features
@@ -34,9 +42,13 @@ directly.
 - Search YouTube without configuring an API key.
 - Play watch, playlist, Shorts, Live, embed, and `youtu.be` links.
 - Keep playback mounted while searching or browsing the library.
-- Save favourites and retain up to 12 recent videos.
+- Save favourites and retain up to 50 recent videos.
+- Configure how many favourites and recent videos each list displays.
+- Float, resize, and reposition the player independently of the workspace.
+- Dock into the native Hermes layout grid, then move, split, tab, or resize the pane.
+- Grow a docked library row smoothly while keeping the neighbouring pane visible.
 - Hide recent history without deleting it.
-- Resize, reposition, expand, and collapse with smooth pane transitions.
+- Expand and collapse with smooth pane transitions.
 - Run in a webview session isolated from other Hermes webviews.
 - Check for and install published plugin updates without leaving Hermes.
 - Open, hide, browse favourites, or clear playback from the command palette.
@@ -134,14 +146,28 @@ whatever the connection mode.
 | Enter / play button | Play a pasted link or the top search result |
 | Star | Add or remove the current video from favourites |
 | List / chevron | Show or hide favourites and recent history |
-| Settings cog | Configure recent history and check for plugin updates |
+| Move | Enter the Hermes layout editor for the docked pane |
+| Settings cog | Choose floating or docked mode, set list length, configure recents, and check for updates |
 | Floating pane | Drag the header or resize from the southeast corner |
+| Docked pane | Move, split, tab, or resize through the Hermes layout controls |
 | Status bar chip | Hide or restore the player |
 | Command palette | Show, hide, open favourites, or clear the player |
 
+## Pane Modes
+
+| Mode | Behaviour |
+| --- | --- |
+| Floating | Draggable overlay with a southeast resize handle and persisted geometry |
+| Docked | Native Hermes grid pane with persisted placement and Layout Editor support |
+
 The library expands the floating pane to fit its content up to the available
-viewport height. Longer lists remain scrollable without displaying a visual
-scrollbar.
+viewport height. In a vertical docked split it grows its layout row and pushes
+the neighbouring pane down, while preserving enough room for that pane. Longer
+lists then scroll inside the expanded row.
+
+Changing pane location remounts the webview, so active playback is briefly
+interrupted. Hermes remembers floating geometry and docked grid placement
+independently, letting each mode return to its previous position.
 
 ## Supported Links
 
@@ -149,10 +175,10 @@ Accepted targets include YouTube watch pages, `youtu.be`, playlists, Shorts,
 Live, and embed URLs, plus bare 11-character video IDs. Start timestamps in
 `t=` or `start=` are honoured, including values such as `1h2m3s`.
 
-The current URL, favourites, recent-visibility setting, and recent history are
-stored in Hermes plugin storage. The `persist:hermes-yt-plugin` partition gives
-the player its own cookie jar, isolated from other Hermes webviews and persisted
-across restarts.
+The current URL, favourites, recent-visibility setting, list length, pane mode,
+and recent history are stored in Hermes plugin storage. The
+`persist:hermes-yt-plugin` partition gives the player its own cookie jar,
+isolated from other Hermes webviews and persisted across restarts.
 
 ## Known Limitations
 
@@ -170,9 +196,9 @@ access media streams.
 ## Playback Lifecycle
 
 Searching and opening the library leave the player mounted, so playback
-continues through those interactions. Hiding or collapsing the floating pane
-unmounts its body and stops playback. This is a constraint of how Hermes renders
-floating panes.
+continues through those interactions. Hiding or collapsing the floating pane,
+disabling a docked pane, or changing pane mode unmounts its body and interrupts
+playback. This follows the Hermes pane lifecycle.
 
 ## How It Works
 
