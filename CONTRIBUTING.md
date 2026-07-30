@@ -22,10 +22,22 @@ node --check desktop-plugins/hermes-yt-plugin/plugin.js
 bash -n install.sh
 shellcheck install.sh
 node .github/scripts/check-imports.mjs
+node .github/scripts/check-updater.mjs
 ```
 
-CI runs exactly these four. `main` is protected, so everything lands through a
+CI runs exactly these five. `main` is protected, so everything lands through a
 pull request.
+
+## Publishing a release
+
+Before tagging a release, update `VERSION` near the top of
+`desktop-plugins/hermes-yt-plugin/plugin.js`. It must match the release tag
+without the leading `v`; for example, tag `v0.3.0` must contain
+`const VERSION = '0.3.0'`.
+
+The in-app updater reads GitHub's latest published release, downloads the
+plugin file at that exact tag, and rejects it when the embedded version differs.
+Draft and prerelease versions are therefore not offered automatically.
 
 ## Two constraints that will bite you
 
