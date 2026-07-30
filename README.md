@@ -61,6 +61,57 @@ This is a UI-only runtime plugin. It has no backend, build step, or
 `plugin.yaml`. Hermes watches the desktop plugin directory and reloads installed
 changes automatically.
 
+## Troubleshooting
+
+### Installed, but Settings → Plugins shows "0 installed"
+
+If Settings → Plugins reports `No desktop plugins installed yet` and clicking
+**Open plugins folder** raises:
+
+```text
+Could not open the plugins folder
+ENOENT: no such file or directory, mkdir 'undefined'
+```
+
+then the plugin is installed correctly and Hermes cannot see it. This is a
+Hermes Desktop bug, not a fault in this plugin — nothing on disk can load while
+it applies.
+
+**Cause.** Affected builds ask the *connected backend* where `HERMES_HOME` is.
+Point the desktop client at a remote gateway and the backend answers with a path
+on the remote machine — or with nothing — so the client resolves its plugin root
+to the literal string `undefined` and never looks in your local profile. Upstream
+issue [NousResearch/hermes-agent#66899][66899]. From `apps/desktop/electron/main.ts`
+on `main`:
+
+> A remote backend reports its own `hermes_home` over the gateway, which is a
+> path on the REMOTE box; deriving the plugin dir from it yields
+> `undefined/desktop-plugins` (or a non-existent remote path) and the on-disk
+> plugin door silently breaks (#66899).
+
+**Who is affected.** Only sessions connected to a remote backend — check for a
+`Remote: <host>:<port>` indicator in the status bar. Purely local sessions
+resolve the path correctly and are unaffected.
+
+**Affected versions.** Every release up to and including `v2026.7.20`
+(2026-07-20, Hermes Desktop `0.17.0`). Verified by inspecting
+`apps/desktop/electron/main.ts` at each tag: no release yet contains the
+`hermes:fs:desktopPluginsRoot` handler that fixes it.
+
+**Fixed in.** Unreleased as of 2026-07-30. The fix is on `hermes-agent` `main`,
+landing after `v2026.7.20`; it moves the resolution into the Electron main
+process so the plugin root always comes from the *local* `HERMES_HOME`,
+whatever the connection mode.
+
+**Workarounds.**
+
+1. Run Hermes locally instead of against a remote backend.
+2. Update Hermes Desktop to a build that includes the fix.
+3. Install into the remote machine's profile instead —
+   `HERMES_HOME=/path/on/remote ./install.sh`, run there.
+
+[66899]: https://github.com/NousResearch/hermes-agent/issues/66899
+
 ## Controls
 
 | Control | Action |
