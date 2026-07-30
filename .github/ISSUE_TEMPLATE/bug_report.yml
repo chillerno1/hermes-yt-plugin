@@ -1,0 +1,45 @@
+name: Bug report
+description: Something in the player pane does not work
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing: the player is always signed out, so ads and a missing
+        subscriptions feed are expected. See
+        [Known Limitations](https://github.com/chillerno1/hermes-yt-plugin#known-limitations).
+
+  - type: input
+    id: hermes-version
+    attributes:
+      label: Hermes Desktop version
+      description: Settings → About, or `hermes --version`
+      placeholder: "0.19.0"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      placeholder: "macOS 15.5 (Apple Silicon)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what you got instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: console
+    attributes:
+      label: Console output
+      description: >
+        Open the devtools console in Hermes Desktop and paste anything
+        mentioning `hermes-yt-plugin`. Optional, but it usually decides the
+        issue on its own.
+      render: text
