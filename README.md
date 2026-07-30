@@ -153,4 +153,4 @@ bash -n install.sh
 
 ## License
 
-Private for now. All rights reserved until published.
+[MIT](LICENSE)
