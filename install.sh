@@ -7,17 +7,14 @@ HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 
 SRC="$ROOT/desktop-plugins/hermes-yt-plugin"
 DST="$HERMES_HOME/desktop-plugins/hermes-yt-plugin"
-LEGACY_DST="$HERMES_HOME/desktop-plugins/media-overlay"
 
 if [[ ! -f "$SRC/plugin.js" ]]; then
   echo "error: missing $SRC/plugin.js" >&2
   exit 1
 fi
 
-mkdir -p "$HERMES_HOME/desktop-plugins"
-rm -rf "$DST" "$LEGACY_DST"
 mkdir -p "$DST"
-cp -R "$SRC/." "$DST/"
+install -m 0644 "$SRC/plugin.js" "$DST/plugin.js"
 
 echo "Installed desktop plugin → $DST"
 cat <<'EOF'
