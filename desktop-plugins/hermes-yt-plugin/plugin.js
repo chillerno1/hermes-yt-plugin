@@ -38,7 +38,15 @@ import { useEffect, useRef, useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
 const ID = 'hermes-yt-plugin'
-/** Own session, so a YouTube sign-in survives restarts. */
+/**
+ * Own persistent cookie jar, isolated from other Hermes webviews.
+ *
+ * NB: this does NOT mean the player is signed in. There is no sign-in flow —
+ * WATCH_CSS hides the masthead (and its sign-in button), the player webview is
+ * built without `allowpopups`, and accounts.google.com rejects Electron's user
+ * agent as an insecure embedded browser anyway. The partition would hold a
+ * session; nothing can currently establish one.
+ */
 const PARTITION = 'persist:hermes-yt-plugin'
 const OPEN_KEY = 'floatingOpen'
 const SRC_KEY = 'lastSrc'

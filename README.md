@@ -37,7 +37,7 @@ directly.
 - Save favourites and retain up to 12 recent videos.
 - Hide recent history without deleting it.
 - Resize, reposition, expand, and collapse with smooth pane transitions.
-- Preserve YouTube sign-in inside an isolated, persistent webview session.
+- Run in a webview session isolated from other Hermes webviews.
 - Open, hide, browse favourites, or clear playback from the command palette.
 
 ## Install
@@ -85,8 +85,22 @@ Live, and embed URLs, plus bare 11-character video IDs. Start timestamps in
 `t=` or `start=` are honoured, including values such as `1h2m3s`.
 
 The current URL, favourites, recent-visibility setting, and recent history are
-stored in Hermes plugin storage. The `persist:hermes-yt-plugin` partition
-keeps YouTube sign-in state isolated from other Hermes webviews.
+stored in Hermes plugin storage. The `persist:hermes-yt-plugin` partition gives
+the player its own cookie jar, isolated from other Hermes webviews and persisted
+across restarts.
+
+## Known Limitations
+
+**There is no sign-in flow.** The player is always signed out, so you get the
+logged-out YouTube experience: ads, no subscriptions feed, no watch history, no
+playlists. The partition would persist a session, but nothing can establish one
+— the masthead (and its sign-in button) is hidden by the pane's CSS, the webview
+is created without `allowpopups`, and `accounts.google.com` rejects Electron's
+user agent as an insecure embedded browser regardless.
+
+Signing in would not remove ads on a free account — only YouTube Premium does
+that. This plugin plays YouTube's own player untouched and does not block ads or
+access media streams.
 
 ## Playback Lifecycle
 
