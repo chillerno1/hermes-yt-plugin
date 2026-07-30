@@ -1,0 +1,34 @@
+name: check
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Node >= 22 detects ESM syntax in a .js file, so `--check` parses the
+          # plugin as a module instead of failing on its top-level imports.
+          node-version: '22'
+
+      - name: Plugin parses
+        run: node --check desktop-plugins/hermes-yt-plugin/plugin.js
+
+      - name: Installer parses
+        run: bash -n install.sh
+
+      - name: Installer lints
+        run: shellcheck install.sh
+
+      # Hermes decides what the plugin imports by regex-scanning raw source, with
+      # no comment or string awareness. Anything that looks like a specifier is
+      # treated as one, and a specifier outside the allowlist makes the runtime
+      # refuse to load the plugin. Guard the same way the loader looks.
+      - name: Imports stay inside the loader allowlist
+        run: node .github/scripts/check-imports.mjs
