@@ -53,13 +53,21 @@ const SRC_KEY = 'lastSrc'
 const FAVOURITES_KEY = 'favourites'
 const HISTORY_KEY = 'history'
 const SHOW_RECENTS_KEY = 'showRecents'
+const FLOATING_SIZE_KEY = 'floatingSize'
 const HISTORY_CAP = 12
 const RESULT_CAP = 8
 const SEARCH_DEBOUNCE_MS = 350
 const FLOATING_VIEWPORT_TOP = 34
 const FLOATING_MARGIN = 12
+const FLOATING_MIN_WIDTH = 280
+const FLOATING_MAX_WIDTH = 1280
+const FLOATING_HORIZONTAL_INSET = 16
+const FLOATING_CHROME_HEIGHT = 84
+const PLAYER_VIEW_WIDTH = 800
+const PLAYER_VIEW_HEIGHT = 450
 const PANEL_RESIZE_MS = 220
 const PANEL_FADE_MS = 160
+const FLOATING_RESIZE_END_EVENT = 'hermes-yt-plugin:resize-end'
 
 /** Shared open-state for the floating card (chip ↔ close button). */
 const $floatingOpen = atom(true)
@@ -377,7 +385,7 @@ const WATCH_CSS = `
  * The player letterboxes whatever the pane's shape doesn't match. That's normal
  * video behaviour, not a bug — resizing the pane toward 16:9 removes it.
  */
-function Player({ src, onNavigate, onTitle }) {
+function Player({ src, constrained, onNavigate, onTitle }) {
   const mount = useRef(null)
 
   // Held in a ref, and the effect depends on `src` ALONE.
@@ -407,9 +415,12 @@ function Player({ src, onNavigate, onTitle }) {
     // iframe fills the host element. Overriding that with display:block leaves
     // the guest near the iframe's default 300x150 size, producing black space
     // on the right and below it.
+    view.style.position = 'absolute'
+    view.style.inset = '0 auto auto 0'
     view.style.display = 'flex'
-    view.style.width = '100%'
-    view.style.height = '100%'
+    view.style.width = `${PLAYER_VIEW_WIDTH}px`
+    view.style.height = `${PLAYER_VIEW_HEIGHT}px`
+    view.style.transformOrigin = 'top left'
     view.style.background = '#000'
 
     // Re-applied per navigation: insertCSS is scoped to the current document, so
@@ -446,6 +457,17 @@ function Player({ src, onNavigate, onTitle }) {
       for (const delay of [400, 1500]) nudges.push(setTimeout(nudgeResize, delay))
     }
 
+    // Electron stops reliably painting a large, live-resized guest surface.
+    // Keep the guest at a known-working 16:9 viewport and scale that surface;
+    // Chromium maps pointer coordinates through the transform as well.
+    const fitView = () => {
+      const width = parent.clientWidth
+      const height = parent.clientHeight
+      if (!width || !height) return
+      view.style.transform = `scale(${width / PLAYER_VIEW_WIDTH}, ${height / PLAYER_VIEW_HEIGHT})`
+    }
+    const resizeObserver = new ResizeObserver(fitView)
+
     const report = () => {
       try {
         handlers.current.onNavigate(view.getURL())
@@ -462,8 +484,11 @@ function Player({ src, onNavigate, onTitle }) {
     view.addEventListener('did-navigate-in-page', report)
     view.addEventListener('page-title-updated', onPageTitle)
     parent.appendChild(view)
+    fitView()
+    resizeObserver.observe(parent)
 
     return () => {
+      resizeObserver.disconnect()
       view.removeEventListener('dom-ready', applyCss)
       view.removeEventListener('did-navigate', applyCss)
       view.removeEventListener('did-navigate-in-page', applyCss)
@@ -475,7 +500,8 @@ function Player({ src, onNavigate, onTitle }) {
     }
   }, [src])
 
-  // A 16:9 box, NOT flex: 1.
+  // Prefer 16:9. Once the user has manually sized the pane, allow this box to
+  // shrink when necessary so the fixed controls never fall below the viewport.
   //
   // Stretching it to the pane makes the player box taller than the video, and
   // YouTube then pads the bottom with player background — the "black bar". The
@@ -488,11 +514,10 @@ function Player({ src, onNavigate, onTitle }) {
     style: {
       width: '100%',
       aspectRatio: '16 / 9',
-      // `flex: 0 0 auto` is load-bearing. aspect-ratio only states a PREFERRED
-      // ratio; as a flex item with the default shrink factor this box was the
-      // thing that gave way when the controls and list needed room, measured at
-      // 402x150 in a column that owed it 402x226. The list scrolls instead now.
-      flex: '0 0 auto',
+      maxHeight: 'calc(100vh - 96px)',
+      flex: constrained ? '0 1 auto' : '0 0 auto',
+      minHeight: constrained ? '100px' : undefined,
+      position: 'relative',
       overflow: 'hidden',
       borderRadius: '4px',
       background: '#000',
@@ -679,8 +704,147 @@ function Library({ favourites, history, showRecents, onPlay, onRemoveFavourite, 
   })
 }
 
+/** Add a persisted resize grip when the Hermes shell does not provide one. */
+function useFallbackFloatingResize(rootRef, storage) {
+  const resizingRef = useRef(false)
+  const manualHeightRef = useRef(null)
+  const [manuallySized, setManuallySized] = useState(false)
+
+  useEffect(() => {
+    const root = rootRef.current
+    const pane = root && root.closest('[data-floating-pane]')
+    if (!root || !pane || pane.querySelector('[data-floating-resize]')) return undefined
+    setManuallySized(true)
+
+    const fitSize = (requestedWidth) => {
+      const rect = pane.getBoundingClientRect()
+      const availableWidth = window.innerWidth - rect.left - FLOATING_MARGIN
+      const availableHeight = window.innerHeight - rect.top - FLOATING_MARGIN
+      const widthForAvailableHeight =
+        ((availableHeight - FLOATING_CHROME_HEIGHT) * 16) / 9 + FLOATING_HORIZONTAL_INSET
+      const maxWidth = Math.max(
+        FLOATING_MIN_WIDTH,
+        Math.min(FLOATING_MAX_WIDTH, availableWidth, widthForAvailableHeight)
+      )
+      const width = Math.min(Math.max(requestedWidth, FLOATING_MIN_WIDTH), maxWidth)
+      const playerWidth = Math.max(0, width - FLOATING_HORIZONTAL_INSET)
+
+      return {
+        width,
+        height: (playerWidth * 9) / 16 + FLOATING_CHROME_HEIGHT,
+      }
+    }
+
+    const stored = storage.get(FLOATING_SIZE_KEY, null)
+    if (
+      stored &&
+      Number.isFinite(stored.width) &&
+      Number.isFinite(stored.height) &&
+      stored.width > 0 &&
+      stored.height > 0
+    ) {
+      const size = fitSize(stored.width)
+      pane.style.width = `${Math.round(size.width)}px`
+      pane.style.height = `${Math.round(size.height)}px`
+      manualHeightRef.current = size.height
+    }
+
+    const handle = document.createElement('div')
+    handle.setAttribute('aria-label', 'Resize YouTube pane')
+    handle.setAttribute('data-floating-no-drag', '')
+    handle.setAttribute('data-hermes-yt-plugin-resize', 'se')
+    handle.setAttribute('role', 'separator')
+    handle.setAttribute('title', 'Drag to resize')
+    Object.assign(handle.style, {
+      position: 'absolute',
+      right: '0',
+      bottom: '0',
+      zIndex: '20',
+      width: '16px',
+      height: '16px',
+      cursor: 'nwse-resize',
+      touchAction: 'none',
+      opacity: '0.65',
+      background:
+        'linear-gradient(135deg, transparent 58%, color-mix(in srgb, var(--ui-text-quaternary) 75%, transparent) 58%, color-mix(in srgb, var(--ui-text-quaternary) 75%, transparent) 66%, transparent 66%, transparent 74%, color-mix(in srgb, var(--ui-text-quaternary) 75%, transparent) 74%, color-mix(in srgb, var(--ui-text-quaternary) 75%, transparent) 82%, transparent 82%)',
+    })
+    pane.appendChild(handle)
+
+    let drag = null
+
+    const onPointerDown = (event) => {
+      const rect = pane.getBoundingClientRect()
+      const compactSize = fitSize(rect.width)
+      drag = {
+        x: event.clientX,
+        y: event.clientY,
+        width: rect.width,
+        compactHeight: compactSize.height,
+        startCompactHeight: compactSize.height,
+        extraHeight: Math.max(0, rect.height - compactSize.height),
+        transition: pane.style.transition,
+      }
+      resizingRef.current = true
+      pane.style.transition = 'none'
+      handle.setPointerCapture(event.pointerId)
+      event.preventDefault()
+      event.stopPropagation()
+    }
+
+    const onPointerMove = (event) => {
+      if (!drag) return
+      const deltaX = event.clientX - drag.x
+      const deltaY = event.clientY - drag.y
+      const widthFromHeight =
+        ((drag.startCompactHeight + deltaY - FLOATING_CHROME_HEIGHT) * 16) / 9 +
+        FLOATING_HORIZONTAL_INSET
+      const requestedWidth =
+        Math.abs(deltaX) >= Math.abs(deltaY) ? drag.width + deltaX : widthFromHeight
+      const size = fitSize(requestedWidth)
+      const rect = pane.getBoundingClientRect()
+      const maxHeight = window.innerHeight - rect.top - FLOATING_MARGIN
+      drag.compactHeight = size.height
+      pane.style.width = `${Math.round(size.width)}px`
+      pane.style.height = `${Math.round(Math.min(size.height + drag.extraHeight, maxHeight))}px`
+    }
+
+    const finishResize = (event) => {
+      if (!drag) return
+      const rect = pane.getBoundingClientRect()
+      const transition = drag.transition
+      const compactHeight = drag.compactHeight
+      drag = null
+      resizingRef.current = false
+      manualHeightRef.current = compactHeight
+      pane.style.transition = transition
+      if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId)
+      storage.set(FLOATING_SIZE_KEY, {
+        width: Math.round(rect.width),
+        height: Math.round(compactHeight),
+      })
+      root.dispatchEvent(new Event(FLOATING_RESIZE_END_EVENT))
+    }
+
+    handle.addEventListener('pointerdown', onPointerDown)
+    handle.addEventListener('pointermove', onPointerMove)
+    handle.addEventListener('pointerup', finishResize)
+    handle.addEventListener('pointercancel', finishResize)
+
+    return () => {
+      resizingRef.current = false
+      handle.removeEventListener('pointerdown', onPointerDown)
+      handle.removeEventListener('pointermove', onPointerMove)
+      handle.removeEventListener('pointerup', finishResize)
+      handle.removeEventListener('pointercancel', finishResize)
+      handle.remove()
+    }
+  }, [rootRef, storage])
+
+  return { manualHeightRef, manuallySized, resizingRef }
+}
+
 /** Fit the closed card to its controls and grow it around an open list. */
-function useAutoSizeFloatingPane(rootRef, expanded) {
+function useAutoSizeFloatingPane(rootRef, expanded, manualHeightRef, resizingRef) {
   const hasClosedFit = useRef(false)
 
   useEffect(() => {
@@ -707,7 +871,7 @@ function useAutoSizeFloatingPane(rootRef, expanded) {
 
     const apply = () => {
       frame = null
-      if (!pane.isConnected) return
+      if (!pane.isConnected || resizingRef.current) return
 
       const headerHeight = header ? header.getBoundingClientRect().height : 0
       const naturalHeight = Math.ceil(root.scrollHeight + headerHeight)
@@ -715,7 +879,16 @@ function useAutoSizeFloatingPane(rootRef, expanded) {
         120,
         window.innerHeight - FLOATING_VIEWPORT_TOP - FLOATING_MARGIN * 2
       )
-      const height = Math.min(expanded ? Math.max(initialHeight, naturalHeight) : naturalHeight, maxHeight)
+      const manualHeight = manualHeightRef.current
+      const contentHeight =
+        manualHeight === null
+          ? expanded
+            ? Math.max(initialHeight, naturalHeight)
+            : naturalHeight
+          : expanded
+            ? Math.max(manualHeight, naturalHeight)
+            : manualHeight
+      const height = Math.min(contentHeight, maxHeight)
       const heightCss = `${Math.round(height)}px`
 
       if (pane.style.height !== heightCss) pane.style.height = heightCss
@@ -749,12 +922,14 @@ function useAutoSizeFloatingPane(rootRef, expanded) {
     const paneObserver = new MutationObserver(scheduleSettled)
     paneObserver.observe(pane, { attributes: true, attributeFilter: ['style'] })
     window.addEventListener('resize', scheduleSettled)
+    root.addEventListener(FLOATING_RESIZE_END_EVENT, scheduleSettled)
     scheduleSettled()
 
     return () => {
       contentObserver.disconnect()
       paneObserver.disconnect()
       window.removeEventListener('resize', scheduleSettled)
+      root.removeEventListener(FLOATING_RESIZE_END_EVENT, scheduleSettled)
       if (frame !== null) cancelAnimationFrame(frame)
       clearTimeout(settleTimer)
       if (!transitionToken) return
@@ -769,7 +944,8 @@ function useAutoSizeFloatingPane(rootRef, expanded) {
       }
 
       pane.dataset.hermesYtPluginTransition = transitionToken
-      pane.style.height = initialStyle.height
+      const manualHeight = manualHeightRef.current
+      pane.style.height = manualHeight === null ? initialStyle.height : `${Math.round(manualHeight)}px`
       if (prefersReducedMotion()) {
         pane.style.transition = initialStyle.transition
         delete pane.dataset.hermesYtPluginTransition
@@ -781,7 +957,7 @@ function useAutoSizeFloatingPane(rootRef, expanded) {
         }, PANEL_RESIZE_MS)
       }
     }
-  }, [expanded, rootRef])
+  }, [expanded, manualHeightRef, resizingRef, rootRef])
 }
 
 /** Stage content visibility around the pane's height animation. */
@@ -945,7 +1121,13 @@ function Overlay({ storage }) {
     storage.set(HISTORY_KEY, next)
   }
 
-  useAutoSizeFloatingPane(rootRef, panelTransition.expanded)
+  const resizeState = useFallbackFloatingResize(rootRef, storage)
+  useAutoSizeFloatingPane(
+    rootRef,
+    panelTransition.expanded,
+    resizeState.manualHeightRef,
+    resizeState.resizingRef
+  )
   useHiddenFloatingScrollbar(rootRef)
 
   return jsxs('div', {
@@ -956,6 +1138,8 @@ function Overlay({ storage }) {
       flexDirection: 'column',
       gap: '6px',
       padding: '4px 8px 6px',
+      boxSizing: 'border-box',
+      height: resizeState.manuallySized ? '100%' : undefined,
       // Content height drives the closed pane fit. The shell's scroll area is
       // still available when an expanded list reaches the viewport limit.
       minHeight: 0,
@@ -965,14 +1149,21 @@ function Overlay({ storage }) {
       jsx('div', { ref: anchorRef, style: { position: 'absolute', width: 0, height: 0 } }),
 
       src
-        ? jsx(Player, { src, onNavigate, onTitle })
+        ? jsx(Player, {
+            src,
+            constrained: resizeState.manuallySized && !panelOpen,
+            onNavigate,
+            onTitle,
+          })
         : jsx('div', {
             style: {
               display: 'grid',
               placeItems: 'center',
               width: '100%',
               aspectRatio: '16 / 9',
-              flex: '0 0 auto',
+              maxHeight: 'calc(100vh - 96px)',
+              flex: resizeState.manuallySized && !panelOpen ? '0 1 auto' : '0 0 auto',
+              minHeight: resizeState.manuallySized && !panelOpen ? '100px' : undefined,
               borderRadius: '4px',
               fontSize: '0.6875rem',
               textAlign: 'center',
@@ -983,7 +1174,13 @@ function Overlay({ storage }) {
           }),
 
       jsxs('div', {
-        style: { display: 'flex', alignItems: 'center', gap: '4px', marginTop: '4px' },
+        style: {
+          display: 'flex',
+          alignItems: 'center',
+          flex: '0 0 auto',
+          gap: '4px',
+          marginTop: '4px',
+        },
         children: [
           jsx('input', {
             value: query,
