@@ -1,9 +1,9 @@
 /**
- * hermes-yt-plugin — floating YouTube player for the Hermes Desktop client
+ * hermes-yt-plugin — YouTube player for the Hermes Desktop client
  *
- * A floating YouTube player for background listening. Type to search, pick a
- * result from the dropdown, star what you like. The player keeps playing while
- * you search.
+ * A floating or tiled YouTube player for background listening. Type to search,
+ * pick a result from the dropdown, star what you like. The player keeps playing
+ * while you search.
  *
  * Playback runs YouTube's own player in a <webview> — a small browser — so the
  * normal player (and its ads/analytics) is what plays. This deliberately does
@@ -38,7 +38,7 @@ import { useEffect, useRef, useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
 const ID = 'hermes-yt-plugin'
-const VERSION = '0.3.0'
+const VERSION = '0.4.0'
 const RELEASE_API_URL = 'https://api.github.com/repos/chillerno1/hermes-yt-plugin/releases/latest'
 const RELEASES_URL = 'https://github.com/chillerno1/hermes-yt-plugin/releases'
 const RELEASE_PLUGIN_PATH = 'desktop-plugins/hermes-yt-plugin/plugin.js'
@@ -57,9 +57,14 @@ const SRC_KEY = 'lastSrc'
 const FAVOURITES_KEY = 'favourites'
 const HISTORY_KEY = 'history'
 const SHOW_RECENTS_KEY = 'showRecents'
+const PANE_MODE_KEY = 'paneMode'
+const LIST_LIMIT_KEY = 'listLimit'
 const FLOATING_SIZE_KEY = 'floatingSize'
 const UPDATE_PENDING_KEY = 'updatePendingVersion'
-const HISTORY_CAP = 12
+const DEFAULT_LIST_LIMIT = 12
+const MIN_LIST_LIMIT = 1
+const MAX_LIST_LIMIT = 50
+const HISTORY_RETENTION_CAP = MAX_LIST_LIMIT
 const RESULT_CAP = 8
 const UPDATE_SOURCE_MAX_BYTES = 1_000_000
 const SEARCH_DEBOUNCE_MS = 350
@@ -74,6 +79,10 @@ const PLAYER_VIEW_HEIGHT = 450
 const PANEL_RESIZE_MS = 220
 const PANEL_FADE_MS = 160
 const FLOATING_RESIZE_END_EVENT = 'hermes-yt-plugin:resize-end'
+const DOCKED_RESIZE_EVENT = 'hermes-yt-plugin:docked-resize'
+const DOCKED_MIN_HEIGHT_VAR = '--hermes-yt-plugin-docked-min-height'
+const DOCKED_COMPACT_MIN_HEIGHT = 180
+const DOCKED_SIBLING_MIN_HEIGHT = 140
 
 /** Shared open-state for the floating card (chip ↔ close button). */
 const $floatingOpen = atom(true)
@@ -85,8 +94,20 @@ const $favourites = atom([])
 const $history = atom([])
 const $libraryOpen = atom(false)
 const $showRecents = atom(true)
+const $paneMode = atom('floating')
+const $listLimit = atom(DEFAULT_LIST_LIMIT)
 
 const VIDEO_ID = /^[\w-]{11}$/
+
+function normalizePaneMode(value) {
+  return value === 'docked' ? 'docked' : 'floating'
+}
+
+function normalizeListLimit(value) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return DEFAULT_LIST_LIMIT
+  return Math.min(MAX_LIST_LIMIT, Math.max(MIN_LIST_LIMIT, Math.round(parsed)))
+}
 
 function parseSemanticVersion(value) {
   const match = String(value || '')
@@ -329,6 +350,26 @@ function prefersReducedMotion() {
   } catch {
     return false
   }
+}
+
+function openLayoutEditor() {
+  const button = [...document.querySelectorAll('.codicon-layout')]
+    .map((icon) => icon.closest('button'))
+    .find((candidate) => {
+      let element = candidate
+      while (element) {
+        if (window.getComputedStyle(element).position === 'fixed') return true
+        element = element.parentElement
+      }
+      return false
+    })
+
+  if (!button) {
+    host.notify({ kind: 'error', message: 'Hermes layout editor is unavailable' })
+    return
+  }
+
+  button.click()
 }
 
 function cleanTitle(raw) {
@@ -652,6 +693,7 @@ function Player({ src, constrained, onNavigate, onTitle }) {
   // below the controls as pane background rather than reading as a black hole.
   return jsx('div', {
     ref: mount,
+    'data-hermes-yt-plugin-player': '',
     style: {
       width: '100%',
       aspectRatio: '16 / 9',
@@ -811,12 +853,23 @@ function LibraryRow({ entry, onPlay, onRemove, removeLabel }) {
  * unreliable, and replacing the player would unmount it and stop the audio —
  * which is the whole point of the overlay.
  */
-function Library({ favourites, history, showRecents, onPlay, onRemoveFavourite, onRemoveHistory }) {
+function Library({
+  favourites,
+  history,
+  showRecents,
+  listLimit,
+  onPlay,
+  onRemoveFavourite,
+  onRemoveHistory,
+}) {
+  const visibleFavourites = favourites.slice(0, listLimit)
+  const visibleHistory = history.slice(0, listLimit)
+
   return jsxs('div', {
     style: panelStyle,
     children: [
-      favourites.length ? heading('Favourites') : null,
-      ...favourites.map((entry) =>
+      visibleFavourites.length ? heading('Favourites') : null,
+      ...visibleFavourites.map((entry) =>
         jsx(LibraryRow, {
           entry,
           onPlay,
@@ -824,9 +877,9 @@ function Library({ favourites, history, showRecents, onPlay, onRemoveFavourite, 
           removeLabel: 'Remove from favourites',
         }, `fav:${entryKey(entry.url)}`)
       ),
-      showRecents && history.length ? heading('Recent') : null,
+      showRecents && visibleHistory.length ? heading('Recent') : null,
       ...(showRecents
-        ? history.map((entry) =>
+        ? visibleHistory.map((entry) =>
             jsx(LibraryRow, {
               entry,
               onPlay,
@@ -835,7 +888,7 @@ function Library({ favourites, history, showRecents, onPlay, onRemoveFavourite, 
             }, `hist:${entryKey(entry.url)}`)
           )
         : []),
-      !favourites.length && (!showRecents || !history.length)
+      !visibleFavourites.length && (!showRecents || !visibleHistory.length)
         ? jsx('div', {
             style: { padding: '6px 2px', fontSize: '0.6875rem', color: 'var(--ui-text-quaternary)' },
             children: 'Nothing saved yet. Play something, then star it.',
@@ -846,12 +899,13 @@ function Library({ favourites, history, showRecents, onPlay, onRemoveFavourite, 
 }
 
 /** Add a persisted resize grip when the Hermes shell does not provide one. */
-function useFallbackFloatingResize(rootRef, storage) {
+function useFallbackFloatingResize(rootRef, storage, enabled) {
   const resizingRef = useRef(false)
   const manualHeightRef = useRef(null)
   const [manuallySized, setManuallySized] = useState(false)
 
   useEffect(() => {
+    if (!enabled) return undefined
     const root = rootRef.current
     const pane = root && root.closest('[data-floating-pane]')
     if (!root || !pane || pane.querySelector('[data-floating-resize]')) return undefined
@@ -979,16 +1033,17 @@ function useFallbackFloatingResize(rootRef, storage) {
       handle.removeEventListener('pointercancel', finishResize)
       handle.remove()
     }
-  }, [rootRef, storage])
+  }, [enabled, rootRef, storage])
 
   return { manualHeightRef, manuallySized, resizingRef }
 }
 
 /** Fit the closed card to its controls and grow it around an open list. */
-function useAutoSizeFloatingPane(rootRef, expanded, manualHeightRef, resizingRef) {
+function useAutoSizeFloatingPane(rootRef, expanded, manualHeightRef, resizingRef, enabled) {
   const hasClosedFit = useRef(false)
 
   useEffect(() => {
+    if (!enabled) return undefined
     const root = rootRef.current
     const pane = root && root.closest('[data-floating-pane]')
     if (!root || !pane) return undefined
@@ -1098,7 +1153,7 @@ function useAutoSizeFloatingPane(rootRef, expanded, manualHeightRef, resizingRef
         }, PANEL_RESIZE_MS)
       }
     }
-  }, [expanded, manualHeightRef, resizingRef, rootRef])
+  }, [enabled, expanded, manualHeightRef, resizingRef, rootRef])
 }
 
 /** Stage content visibility around the pane's height animation. */
@@ -1130,8 +1185,9 @@ function usePanelTransition(open) {
 }
 
 /** Keep the shell's overflow fallback, but do not show its scrollbar track. */
-function useHiddenFloatingScrollbar(rootRef) {
+function useHiddenFloatingScrollbar(rootRef, enabled) {
   useEffect(() => {
+    if (!enabled) return undefined
     const body = rootRef.current && rootRef.current.parentElement
     if (!body) return undefined
 
@@ -1149,17 +1205,147 @@ function useHiddenFloatingScrollbar(rootRef) {
       body.style.scrollbarWidth = previousWidth
       if (!hadMarker) body.removeAttribute(marker)
     }
-  }, [rootRef])
+  }, [enabled, rootRef])
 }
 
-function Overlay({ storage }) {
+/** Grow a vertically tiled zone around an open panel without remounting it. */
+function useAutoSizeDockedPane(rootRef, panelRef, expanded, enabled) {
+  const expandedRef = useRef(expanded)
+  expandedRef.current = expanded
+
+  useEffect(() => {
+    if (!enabled) return undefined
+
+    let frame = null
+    let target = null
+
+    const releaseTarget = () => {
+      if (!target) return
+      if (target.customValue) {
+        target.wrapper.style.setProperty(DOCKED_MIN_HEIGHT_VAR, target.customValue)
+      } else {
+        target.wrapper.style.removeProperty(DOCKED_MIN_HEIGHT_VAR)
+      }
+      target.wrapper.style.transition = target.transition
+      target = null
+    }
+
+    const apply = () => {
+      frame = null
+      const root = rootRef.current
+      const group = root && root.closest('[data-tree-group]')
+      const wrapper = group && group.parentElement
+      const split = wrapper && wrapper.parentElement
+
+      if (
+        !root ||
+        !group ||
+        !wrapper ||
+        !split ||
+        !split.hasAttribute('data-tree-split') ||
+        window.getComputedStyle(split).flexDirection !== 'column'
+      ) {
+        releaseTarget()
+        return
+      }
+
+      if (!target || target.wrapper !== wrapper) {
+        releaseTarget()
+        target = {
+          wrapper,
+          customValue: wrapper.style.getPropertyValue(DOCKED_MIN_HEIGHT_VAR),
+          transition: wrapper.style.transition,
+        }
+        if (!prefersReducedMotion()) {
+          wrapper.style.transition = [target.transition, `min-height ${PANEL_RESIZE_MS}ms cubic-bezier(0.2, 0, 0.2, 1)`]
+            .filter(Boolean)
+            .join(', ')
+        }
+      }
+
+      const rootStyle = window.getComputedStyle(root)
+      const player = root.querySelector('[data-hermes-yt-plugin-player]')
+      const controls = root.querySelector('[data-hermes-yt-plugin-controls]')
+      const panel = panelRef.current
+      const panelContent = panel && panel.firstElementChild
+      const pixels = (value) => Number.parseFloat(value) || 0
+      const padding =
+        pixels(rootStyle.paddingTop) + pixels(rootStyle.paddingBottom)
+      const gap = pixels(rootStyle.rowGap)
+      const playerHeight = player ? player.getBoundingClientRect().height : 0
+      const controlsStyle = controls ? window.getComputedStyle(controls) : null
+      const controlsHeight = controls
+        ? controls.getBoundingClientRect().height +
+          pixels(controlsStyle?.marginTop) +
+          pixels(controlsStyle?.marginBottom)
+        : 0
+      const panelHeight = expandedRef.current
+        ? Math.max(panel?.scrollHeight || 0, panelContent?.scrollHeight || 0)
+        : 0
+      const chromeHeight = Math.max(
+        0,
+        group.getBoundingClientRect().height - (root.parentElement?.getBoundingClientRect().height || 0)
+      )
+      const naturalHeight =
+        padding +
+        playerHeight +
+        controlsHeight +
+        gap +
+        (expandedRef.current && panelHeight ? gap + panelHeight : 0) +
+        chromeHeight
+      const maxHeight = Math.max(
+        DOCKED_COMPACT_MIN_HEIGHT,
+        split.getBoundingClientRect().height - DOCKED_SIBLING_MIN_HEIGHT
+      )
+      const height = Math.min(
+        maxHeight,
+        Math.max(DOCKED_COMPACT_MIN_HEIGHT, Math.ceil(naturalHeight))
+      )
+      wrapper.style.setProperty(DOCKED_MIN_HEIGHT_VAR, `${height}px`)
+    }
+
+    const schedule = () => {
+      if (frame === null) frame = requestAnimationFrame(apply)
+    }
+
+    const root = rootRef.current
+    const contentObserver = new MutationObserver(schedule)
+    const resizeObserver = new ResizeObserver(schedule)
+
+    if (root) {
+      contentObserver.observe(root, { childList: true, subtree: true })
+      resizeObserver.observe(root)
+    }
+    window.addEventListener('resize', schedule)
+    root?.addEventListener(DOCKED_RESIZE_EVENT, schedule)
+    schedule()
+
+    return () => {
+      contentObserver.disconnect()
+      resizeObserver.disconnect()
+      window.removeEventListener('resize', schedule)
+      root?.removeEventListener(DOCKED_RESIZE_EVENT, schedule)
+      if (frame !== null) cancelAnimationFrame(frame)
+      releaseTarget()
+    }
+  }, [enabled, panelRef, rootRef])
+
+  useEffect(() => {
+    rootRef.current?.dispatchEvent(new Event(DOCKED_RESIZE_EVENT))
+  }, [expanded, rootRef])
+}
+
+function Overlay({ storage, paneMode, onPaneModeChange }) {
   const rootRef = useRef(null)
+  const panelRef = useRef(null)
   const src = useValue($src)
   const current = useValue($current)
   const favourites = useValue($favourites)
   const history = useValue($history)
   const libraryOpen = useValue($libraryOpen)
   const showRecents = useValue($showRecents)
+  const listLimit = useValue($listLimit)
+  const docked = paneMode === 'docked'
 
   const [query, setQuery] = useState('')
   const [results, setResults] = useState([])
@@ -1218,7 +1404,7 @@ function Overlay({ storage }) {
     const key = entryKey(url)
     const next = [{ url, title }, ...$history.get().filter((e) => entryKey(e.url) !== key)].slice(
       0,
-      HISTORY_CAP
+      HISTORY_RETENTION_CAP
     )
     $history.set(next)
     storage.set(HISTORY_KEY, next)
@@ -1262,14 +1448,16 @@ function Overlay({ storage }) {
     storage.set(HISTORY_KEY, next)
   }
 
-  const resizeState = useFallbackFloatingResize(rootRef, storage)
+  const resizeState = useFallbackFloatingResize(rootRef, storage, !docked)
   useAutoSizeFloatingPane(
     rootRef,
     panelTransition.expanded,
     resizeState.manualHeightRef,
-    resizeState.resizingRef
+    resizeState.resizingRef,
+    !docked
   )
-  useHiddenFloatingScrollbar(rootRef)
+  useHiddenFloatingScrollbar(rootRef, !docked)
+  useAutoSizeDockedPane(rootRef, panelRef, panelTransition.expanded, docked)
 
   return jsxs('div', {
     ref: rootRef,
@@ -1280,7 +1468,7 @@ function Overlay({ storage }) {
       gap: '6px',
       padding: '4px 8px 6px',
       boxSizing: 'border-box',
-      height: resizeState.manuallySized ? '100%' : undefined,
+      height: docked || resizeState.manuallySized ? '100%' : undefined,
       // Content height drives the closed pane fit. The shell's scroll area is
       // still available when an expanded list reaches the viewport limit.
       minHeight: 0,
@@ -1292,19 +1480,20 @@ function Overlay({ storage }) {
       src
         ? jsx(Player, {
             src,
-            constrained: resizeState.manuallySized && !panelOpen,
+            constrained: (docked || resizeState.manuallySized) && !panelOpen,
             onNavigate,
             onTitle,
           })
         : jsx('div', {
+            'data-hermes-yt-plugin-player': '',
             style: {
               display: 'grid',
               placeItems: 'center',
               width: '100%',
               aspectRatio: '16 / 9',
               maxHeight: 'calc(100vh - 96px)',
-              flex: resizeState.manuallySized && !panelOpen ? '0 1 auto' : '0 0 auto',
-              minHeight: resizeState.manuallySized && !panelOpen ? '100px' : undefined,
+              flex: (docked || resizeState.manuallySized) && !panelOpen ? '0 1 auto' : '0 0 auto',
+              minHeight: (docked || resizeState.manuallySized) && !panelOpen ? '100px' : undefined,
               borderRadius: '4px',
               fontSize: '0.6875rem',
               textAlign: 'center',
@@ -1315,6 +1504,7 @@ function Overlay({ storage }) {
           }),
 
       jsxs('div', {
+        'data-hermes-yt-plugin-controls': '',
         style: {
           display: 'flex',
           alignItems: 'center',
@@ -1402,7 +1592,23 @@ function Overlay({ storage }) {
               }),
             }),
           }),
-          jsx(SettingsMenu, { storage }),
+          docked
+            ? jsx(Tip, {
+                label: 'Move pane in layout',
+                children: jsx('button', {
+                  type: 'button',
+                  'aria-label': 'Move pane in layout',
+                  'data-floating-no-drag': '',
+                  onClick: () => {
+                    haptic('open')
+                    openLayoutEditor()
+                  },
+                  style: iconButtonStyle(false),
+                  children: jsx(Codicon, { name: 'move', size: '0.75rem' }),
+                }),
+              })
+            : null,
+          jsx(SettingsMenu, { storage, onPaneModeChange }),
         ],
       }),
 
@@ -1418,8 +1624,10 @@ function Overlay({ storage }) {
       // possible. The shell's scroll area remains the fallback when the list is
       // taller than the available viewport.
       jsx('div', {
+        ref: panelRef,
         style: {
-          flex: '0 0 auto',
+          flex: docked && panelTransition.expanded ? '1 1 auto' : '0 0 auto',
+          minHeight: 0,
           display: 'grid',
           gridTemplateRows: panelTransition.expanded ? '1fr' : '0fr',
           opacity: panelTransition.contentVisible ? 1 : 0,
@@ -1429,13 +1637,14 @@ function Overlay({ storage }) {
             : `grid-template-rows ${PANEL_RESIZE_MS}ms cubic-bezier(0.2, 0, 0.2, 1), opacity ${PANEL_FADE_MS}ms ease`,
         },
         children: jsx('div', {
-          style: { minHeight: 0, overflow: 'hidden' },
+          style: { minHeight: 0, overflow: docked ? 'auto' : 'hidden' },
           children: wantsSearch
             ? jsx(Results, { results, searching, query: trimmed, onPlay: play })
             : jsx(Library, {
                 favourites,
                 history,
                 showRecents,
+                listLimit,
                 onPlay: play,
                 onRemoveFavourite: removeFavourite,
                 onRemoveHistory: removeHistory,
@@ -1473,8 +1682,10 @@ function updateActionDetails(update, selfInstall) {
   return { label: 'Check for updates', icon: 'refresh', spinning: false, disabled: false }
 }
 
-function SettingsMenu({ storage }) {
+function SettingsMenu({ storage, onPaneModeChange }) {
   const showRecents = useValue($showRecents)
+  const paneMode = useValue($paneMode)
+  const listLimit = useValue($listLimit)
   const [update, setUpdate] = useState({ status: 'idle', release: null, message: '' })
   const selfInstall = canInstallUpdate()
   const action = updateActionDetails(update, selfInstall)
@@ -1550,7 +1761,7 @@ function SettingsMenu({ storage }) {
       jsx(PopoverContent, {
         align: 'end',
         side: 'bottom',
-        style: { width: '196px', padding: '8px' },
+        style: { width: '224px', padding: '8px' },
         children: jsxs('div', {
           style: {
             display: 'flex',
@@ -1560,6 +1771,88 @@ function SettingsMenu({ storage }) {
             color: 'var(--ui-text-secondary)',
           },
           children: [
+            jsxs('div', {
+              style: { display: 'flex', flexDirection: 'column', gap: '5px' },
+              children: [
+                jsx('span', { children: 'Pane location' }),
+                jsxs('div', {
+                  role: 'group',
+                  'aria-label': 'Pane location',
+                  style: {
+                    display: 'grid',
+                    gridTemplateColumns: '1fr 1fr',
+                    padding: '2px',
+                    gap: '2px',
+                    borderRadius: '4px',
+                    background: 'color-mix(in srgb, var(--ui-text-primary) 6%, transparent)',
+                    border: '1px solid var(--ui-stroke-secondary)',
+                  },
+                  children: ['floating', 'docked'].map((mode) => {
+                    const active = paneMode === mode
+                    return jsx('button', {
+                      type: 'button',
+                      'aria-pressed': active,
+                      'data-floating-no-drag': '',
+                      onClick: () => {
+                        if (active) return
+                        haptic('tap')
+                        onPaneModeChange(mode)
+                      },
+                      style: {
+                        height: '22px',
+                        borderRadius: '3px',
+                        fontSize: '0.625rem',
+                        color: active ? 'var(--ui-text-primary)' : 'var(--ui-text-tertiary)',
+                        background: active
+                          ? 'color-mix(in srgb, var(--ui-text-primary) 10%, transparent)'
+                          : 'transparent',
+                      },
+                      children: mode === 'floating' ? 'Floating' : 'Docked',
+                    }, mode)
+                  }),
+                }),
+              ],
+            }),
+            jsxs('div', {
+              style: {
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '12px',
+              },
+              children: [
+                jsx('label', {
+                  htmlFor: 'hermes-yt-plugin-list-limit',
+                  children: 'Items per list',
+                }),
+                jsx('input', {
+                  id: 'hermes-yt-plugin-list-limit',
+                  type: 'number',
+                  min: MIN_LIST_LIMIT,
+                  max: MAX_LIST_LIMIT,
+                  step: 1,
+                  value: listLimit,
+                  'data-floating-no-drag': '',
+                  onChange: (event) => {
+                    if (event.target.value === '') return
+                    const next = normalizeListLimit(event.target.value)
+                    $listLimit.set(next)
+                    storage.set(LIST_LIMIT_KEY, next)
+                  },
+                  style: {
+                    width: '48px',
+                    height: '22px',
+                    padding: '0 4px',
+                    textAlign: 'center',
+                    fontSize: '0.625rem',
+                    color: 'var(--ui-text-primary)',
+                    background: 'color-mix(in srgb, var(--ui-text-primary) 7%, transparent)',
+                    border: '1px solid var(--ui-stroke-secondary)',
+                    borderRadius: '4px',
+                  },
+                }),
+              ],
+            }),
             jsxs('div', {
               style: {
                 display: 'flex',
@@ -1698,6 +1991,8 @@ export default {
     $favourites.set(ctx.storage.get(FAVOURITES_KEY, []) || [])
     $history.set(ctx.storage.get(HISTORY_KEY, []) || [])
     $showRecents.set(ctx.storage.get(SHOW_RECENTS_KEY, true) !== false)
+    $paneMode.set(normalizePaneMode(ctx.storage.get(PANE_MODE_KEY, 'floating')))
+    $listLimit.set(normalizeListLimit(ctx.storage.get(LIST_LIMIT_KEY, DEFAULT_LIST_LIMIT)))
 
     if (ctx.storage.get(UPDATE_PENDING_KEY, null) === VERSION) {
       ctx.storage.remove(UPDATE_PENDING_KEY)
@@ -1709,17 +2004,22 @@ export default {
     /** @type {null | (() => void)} */
     let disposePane = null
 
-    const setOpen = (next) => {
-      $floatingOpen.set(next)
-      ctx.storage.set(OPEN_KEY, next)
-      // Registry `when` is not reactive — re-register to show/hide.
-      if (next) {
-        if (!disposePane) {
-          disposePane = ctx.register({
-            id: 'screen',
-            area: 'panes',
-            title: 'YouTube',
-            data: {
+    const registerPane = (paneMode) => {
+      const docked = paneMode === 'docked'
+      return ctx.register({
+        // Keep the original id for floating geometry. The stable tiled id lets
+        // Hermes remember the user's grid position between mode changes.
+        id: docked ? 'screen-docked' : 'screen',
+        area: 'panes',
+        title: 'YouTube',
+        data: docked
+          ? {
+              placement: 'right',
+              dock: { pane: 'workspace', pos: 'right' },
+              minWidth: '280px',
+              minHeight: `var(${DOCKED_MIN_HEIGHT_VAR}, ${DOCKED_COMPACT_MIN_HEIGHT}px)`,
+            }
+          : {
               placement: 'floating',
               anchor: 'bottom-right',
               // Close to 16:9 for the player area, so letterboxing is minimal at
@@ -1727,8 +2027,35 @@ export default {
               width: '420px',
               height: '312px',
             },
-            render: () => jsx(Overlay, { storage: ctx.storage }),
-          })
+        render: () =>
+          jsx(Overlay, {
+            storage: ctx.storage,
+            paneMode,
+            onPaneModeChange: setPaneMode,
+          }),
+      })
+    }
+
+    function setPaneMode(next) {
+      const paneMode = normalizePaneMode(next)
+      if (paneMode === $paneMode.get()) return
+
+      $paneMode.set(paneMode)
+      ctx.storage.set(PANE_MODE_KEY, paneMode)
+
+      if (disposePane) {
+        disposePane()
+        disposePane = registerPane(paneMode)
+      }
+    }
+
+    const setOpen = (next) => {
+      $floatingOpen.set(next)
+      ctx.storage.set(OPEN_KEY, next)
+      // Registry `when` is not reactive — re-register to show/hide.
+      if (next) {
+        if (!disposePane) {
+          disposePane = registerPane($paneMode.get())
         }
       } else if (disposePane) {
         disposePane()
