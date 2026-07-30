@@ -38,6 +38,10 @@ import { useEffect, useRef, useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
 const ID = 'hermes-yt-plugin'
+const VERSION = '0.3.0'
+const RELEASE_API_URL = 'https://api.github.com/repos/chillerno1/hermes-yt-plugin/releases/latest'
+const RELEASES_URL = 'https://github.com/chillerno1/hermes-yt-plugin/releases'
+const RELEASE_PLUGIN_PATH = 'desktop-plugins/hermes-yt-plugin/plugin.js'
 /**
  * Own persistent cookie jar, isolated from other Hermes webviews.
  *
@@ -54,8 +58,10 @@ const FAVOURITES_KEY = 'favourites'
 const HISTORY_KEY = 'history'
 const SHOW_RECENTS_KEY = 'showRecents'
 const FLOATING_SIZE_KEY = 'floatingSize'
+const UPDATE_PENDING_KEY = 'updatePendingVersion'
 const HISTORY_CAP = 12
 const RESULT_CAP = 8
+const UPDATE_SOURCE_MAX_BYTES = 1_000_000
 const SEARCH_DEBOUNCE_MS = 350
 const FLOATING_VIEWPORT_TOP = 34
 const FLOATING_MARGIN = 12
@@ -81,6 +87,141 @@ const $libraryOpen = atom(false)
 const $showRecents = atom(true)
 
 const VIDEO_ID = /^[\w-]{11}$/
+
+function parseSemanticVersion(value) {
+  const match = String(value || '')
+    .trim()
+    .match(/^v?(\d+)\.(\d+)\.(\d+)$/)
+
+  if (!match) return null
+
+  const parts = match.slice(1).map(Number)
+  return { text: parts.join('.'), parts }
+}
+
+function compareSemanticVersions(left, right) {
+  const a = parseSemanticVersion(left)
+  const b = parseSemanticVersion(right)
+
+  if (!a || !b) throw new Error('Invalid plugin version')
+
+  for (let index = 0; index < a.parts.length; index += 1) {
+    if (a.parts[index] !== b.parts[index]) return a.parts[index] > b.parts[index] ? 1 : -1
+  }
+
+  return 0
+}
+
+async function fetchLatestRelease() {
+  const response = await fetch(RELEASE_API_URL, {
+    cache: 'no-store',
+    headers: { Accept: 'application/vnd.github+json' },
+  })
+
+  if (!response.ok) throw new Error(`GitHub returned ${response.status}`)
+
+  const payload = await response.json()
+  const tag = String(payload?.tag_name || '').trim()
+  const parsed = parseSemanticVersion(tag)
+
+  if (!parsed) throw new Error('Latest release has an invalid version')
+
+  return {
+    tag,
+    version: parsed.text,
+    url: `${RELEASES_URL}/tag/${encodeURIComponent(tag)}`,
+  }
+}
+
+function desktopBridge() {
+  return typeof window === 'undefined' ? null : window.hermesDesktop || null
+}
+
+function canInstallUpdate() {
+  const desktop = desktopBridge()
+  return typeof desktop?.writeTextFile === 'function'
+}
+
+async function openReleasePage(url = RELEASES_URL) {
+  const openExternal = desktopBridge()?.openExternal
+  if (typeof openExternal !== 'function') throw new Error('Opening release pages is unavailable')
+  await openExternal(url)
+}
+
+async function downloadReleaseSource(release) {
+  const url = `https://raw.githubusercontent.com/chillerno1/hermes-yt-plugin/${encodeURIComponent(release.tag)}/${RELEASE_PLUGIN_PATH}`
+  const response = await fetch(url, { cache: 'no-store' })
+
+  if (!response.ok) throw new Error(`Plugin download returned ${response.status}`)
+
+  const declaredBytes = Number(response.headers.get('content-length') || '0')
+  if (declaredBytes > UPDATE_SOURCE_MAX_BYTES) throw new Error('Plugin download is too large')
+
+  const source = await response.text()
+  const sourceBytes = new TextEncoder().encode(source).byteLength
+  if (!source.trim() || sourceBytes > UPDATE_SOURCE_MAX_BYTES) {
+    throw new Error('Plugin download is empty or too large')
+  }
+
+  const idMatch = source.match(/\bconst\s+ID\s*=\s*(['"])([^'"]+)\1/)
+  const versionMatch = source.match(/\bconst\s+VERSION\s*=\s*(['"])([^'"]+)\1/)
+  const downloadedVersion = parseSemanticVersion(versionMatch?.[2])
+
+  if (idMatch?.[2] !== ID || !source.includes('export default')) {
+    throw new Error('Downloaded file is not hermes-yt-plugin')
+  }
+
+  if (!downloadedVersion || downloadedVersion.text !== release.version) {
+    throw new Error('Downloaded plugin version does not match the release')
+  }
+
+  return source
+}
+
+function installedPluginPath(root) {
+  const separator = String(root).includes('\\') ? '\\' : '/'
+  return `${String(root).replace(/[\\/]+$/, '')}${separator}${ID}${separator}plugin.js`
+}
+
+async function resolvePluginsRoot(desktop) {
+  if (typeof desktop.desktopPluginsRoot === 'function') {
+    const root = await desktop.desktopPluginsRoot()
+    if (root) return root
+  }
+
+  const status = await host.status()
+  const home = String(status?.hermes_home || '').trim()
+  if (!home) throw new Error('Hermes could not resolve the plugins folder')
+
+  const separator = home.includes('\\') ? '\\' : '/'
+  return `${home.replace(/[\\/]+$/, '')}${separator}desktop-plugins`
+}
+
+async function installRelease(release, storage) {
+  const desktop = desktopBridge()
+  if (!canInstallUpdate()) {
+    await openReleasePage(release.url)
+    return false
+  }
+
+  const source = await downloadReleaseSource(release)
+  const root = await resolvePluginsRoot(desktop)
+
+  storage.set(UPDATE_PENDING_KEY, release.version)
+
+  try {
+    await desktop.writeTextFile(installedPluginPath(root), source)
+  } catch (error) {
+    storage.remove(UPDATE_PENDING_KEY)
+    throw error
+  }
+
+  return true
+}
+
+function updateErrorMessage(error) {
+  return error instanceof Error && error.message ? error.message : 'Update failed'
+}
 
 // ── URLs ─────────────────────────────────────────────────────────────────────
 
@@ -1305,8 +1446,91 @@ function Overlay({ storage }) {
   })
 }
 
+function updateActionDetails(update, selfInstall) {
+  if (update.status === 'checking') {
+    return { label: 'Checking...', icon: 'refresh', spinning: true, disabled: true }
+  }
+  if (update.status === 'installing') {
+    return { label: 'Updating...', icon: 'refresh', spinning: true, disabled: true }
+  }
+  if (update.status === 'available') {
+    return {
+      label: selfInstall ? `Update to v${update.release.version}` : `View v${update.release.version}`,
+      icon: selfInstall ? 'cloud-download' : 'link-external',
+      spinning: false,
+      disabled: false,
+    }
+  }
+  if (update.status === 'error') {
+    if (update.release) {
+      return { label: 'View release', icon: 'link-external', spinning: false, disabled: false }
+    }
+    return { label: 'Try again', icon: 'refresh', spinning: false, disabled: false }
+  }
+  if (update.status === 'current') {
+    return { label: 'Check again', icon: 'refresh', spinning: false, disabled: false }
+  }
+  return { label: 'Check for updates', icon: 'refresh', spinning: false, disabled: false }
+}
+
 function SettingsMenu({ storage }) {
   const showRecents = useValue($showRecents)
+  const [update, setUpdate] = useState({ status: 'idle', release: null, message: '' })
+  const selfInstall = canInstallUpdate()
+  const action = updateActionDetails(update, selfInstall)
+
+  const runUpdateAction = async () => {
+    if (action.disabled) return
+
+    if (update.status === 'available' && update.release) {
+      setUpdate({ ...update, status: 'installing', message: selfInstall ? 'Installing update...' : '' })
+
+      try {
+        const installed = await installRelease(update.release, storage)
+        if (!installed) {
+          setUpdate({ ...update, message: 'Release opened in your browser' })
+        }
+      } catch (error) {
+        setUpdate({ status: 'error', release: update.release, message: updateErrorMessage(error) })
+      }
+
+      return
+    }
+
+    if (update.status === 'error' && update.release) {
+      try {
+        await openReleasePage(update.release.url)
+        setUpdate({ ...update, message: 'Release opened in your browser' })
+      } catch (error) {
+        setUpdate({ ...update, message: updateErrorMessage(error) })
+      }
+
+      return
+    }
+
+    setUpdate({ status: 'checking', release: null, message: '' })
+
+    try {
+      const release = await fetchLatestRelease()
+      const comparison = compareSemanticVersions(release.version, VERSION)
+
+      if (comparison > 0) {
+        setUpdate({
+          status: 'available',
+          release,
+          message: `Version ${release.version} is available`,
+        })
+      } else {
+        setUpdate({
+          status: 'current',
+          release: null,
+          message: comparison === 0 ? 'Latest release installed' : 'Development version installed',
+        })
+      }
+    } catch (error) {
+      setUpdate({ status: 'error', release: null, message: updateErrorMessage(error) })
+    }
+  }
 
   return jsxs(Popover, {
     children: [
@@ -1326,27 +1550,108 @@ function SettingsMenu({ storage }) {
       jsx(PopoverContent, {
         align: 'end',
         side: 'bottom',
-        style: { width: '176px', padding: '8px' },
+        style: { width: '196px', padding: '8px' },
         children: jsxs('div', {
           style: {
             display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: '12px',
+            flexDirection: 'column',
+            gap: '8px',
             fontSize: '0.6875rem',
             color: 'var(--ui-text-secondary)',
           },
           children: [
-            jsx('label', { htmlFor: 'hermes-yt-plugin-show-recents', children: 'Show recents' }),
-            jsx(Switch, {
-              id: 'hermes-yt-plugin-show-recents',
-              size: 'xs',
-              checked: showRecents,
-              onCheckedChange: (next) => {
-                haptic('tap')
-                $showRecents.set(next)
-                storage.set(SHOW_RECENTS_KEY, next)
+            jsxs('div', {
+              style: {
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '12px',
               },
+              children: [
+                jsx('label', {
+                  htmlFor: 'hermes-yt-plugin-show-recents',
+                  children: 'Show recents',
+                }),
+                jsx(Switch, {
+                  id: 'hermes-yt-plugin-show-recents',
+                  size: 'xs',
+                  checked: showRecents,
+                  onCheckedChange: (next) => {
+                    haptic('tap')
+                    $showRecents.set(next)
+                    storage.set(SHOW_RECENTS_KEY, next)
+                  },
+                }),
+              ],
+            }),
+            jsxs('div', {
+              style: {
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '6px',
+                paddingTop: '8px',
+                borderTop: '1px solid var(--ui-stroke-secondary)',
+              },
+              children: [
+                jsxs('div', {
+                  style: { display: 'flex', justifyContent: 'space-between', gap: '8px' },
+                  children: [
+                    jsx('span', { children: 'Plugin version' }),
+                    jsx('span', {
+                      style: { color: 'var(--ui-text-tertiary)' },
+                      children: `v${VERSION}`,
+                    }),
+                  ],
+                }),
+                update.message
+                  ? jsx('div', {
+                      'aria-live': 'polite',
+                      style: {
+                        minHeight: '14px',
+                        fontSize: '0.625rem',
+                        overflowWrap: 'anywhere',
+                        color:
+                          update.status === 'error'
+                            ? 'var(--color-destructive)'
+                            : 'var(--ui-text-tertiary)',
+                      },
+                      children: update.message,
+                    })
+                  : null,
+                jsxs('button', {
+                  type: 'button',
+                  disabled: action.disabled,
+                  'data-floating-no-drag': '',
+                  onClick: () => {
+                    haptic('tap')
+                    void runUpdateAction()
+                  },
+                  style: {
+                    width: '100%',
+                    height: '24px',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '5px',
+                    padding: '0 8px',
+                    fontSize: '0.625rem',
+                    color: 'var(--ui-text-secondary)',
+                    background: 'color-mix(in srgb, var(--ui-text-primary) 6%, transparent)',
+                    border: '1px solid var(--ui-stroke-secondary)',
+                    borderRadius: '4px',
+                    opacity: action.disabled ? 0.65 : 1,
+                    cursor: action.disabled ? 'default' : 'pointer',
+                  },
+                  children: [
+                    jsx(Codicon, {
+                      name: action.icon,
+                      size: '0.7rem',
+                      spinning: action.spinning,
+                    }),
+                    jsx('span', { children: action.label }),
+                  ],
+                }),
+              ],
             }),
           ],
         }),
@@ -1393,6 +1698,13 @@ export default {
     $favourites.set(ctx.storage.get(FAVOURITES_KEY, []) || [])
     $history.set(ctx.storage.get(HISTORY_KEY, []) || [])
     $showRecents.set(ctx.storage.get(SHOW_RECENTS_KEY, true) !== false)
+
+    if (ctx.storage.get(UPDATE_PENDING_KEY, null) === VERSION) {
+      ctx.storage.remove(UPDATE_PENDING_KEY)
+      window.setTimeout(() => {
+        host.notify({ kind: 'success', message: `hermes-yt-plugin updated to v${VERSION}` })
+      }, 200)
+    }
 
     /** @type {null | (() => void)} */
     let disposePane = null

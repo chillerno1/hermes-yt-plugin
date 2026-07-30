@@ -32,3 +32,6 @@ jobs:
       # refuse to load the plugin. Guard the same way the loader looks.
       - name: Imports stay inside the loader allowlist
         run: node .github/scripts/check-imports.mjs
+
+      - name: Updater contract
+        run: node .github/scripts/check-updater.mjs

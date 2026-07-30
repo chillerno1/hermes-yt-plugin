@@ -38,6 +38,7 @@ directly.
 - Hide recent history without deleting it.
 - Resize, reposition, expand, and collapse with smooth pane transitions.
 - Run in a webview session isolated from other Hermes webviews.
+- Check for and install published plugin updates without leaving Hermes.
 - Open, hide, browse favourites, or clear playback from the command palette.
 
 ## Install
@@ -60,6 +61,19 @@ HERMES_HOME=/path/to/profile ./install.sh
 This is a UI-only runtime plugin. It has no backend, build step, or
 `plugin.yaml`. Hermes watches the desktop plugin directory and reloads installed
 changes automatically.
+
+## Updates
+
+Open the settings cog and select **Check for updates**. The plugin checks the
+latest published GitHub Release and, when a newer version exists, can replace
+its installed `plugin.js` directly. The downloaded file must come from the
+exact release tag and declare the expected plugin ID and version before Hermes
+will write it.
+
+Hermes hot-reloads the updated file. Favourites, recent history, pane geometry,
+and the isolated YouTube session remain under the same storage keys. Builds
+without the required desktop filesystem bridge open the release page for a
+manual update instead.
 
 ## Troubleshooting
 
@@ -120,7 +134,7 @@ whatever the connection mode.
 | Enter / play button | Play a pasted link or the top search result |
 | Star | Add or remove the current video from favourites |
 | List / chevron | Show or hide favourites and recent history |
-| Settings cog | Toggle whether recent history appears in the library |
+| Settings cog | Configure recent history and check for plugin updates |
 | Floating pane | Drag the header or resize from the southeast corner |
 | Status bar chip | Hide or restore the player |
 | Command palette | Show, hide, open favourites, or clear the player |
