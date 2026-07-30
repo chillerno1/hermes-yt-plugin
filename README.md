@@ -144,12 +144,15 @@ node --check desktop-plugins/hermes-yt-plugin/plugin.js
 bash -n install.sh
 ```
 
-## Roadmap
+## Possible Future Work
 
-- Audio-only compact mode while keeping the webview mounted.
-- Editable playback queue.
-- Current-title text in the status bar.
-- Additional media providers.
+Nothing here is promised or in progress.
+
+- **Sign-in.** Would need the masthead unhidden, a stock browser user agent on
+  the webview, and the auth popup allowed through. Google actively blocks
+  sign-in from embedded webviews, so this may simply not be workable — and it
+  would not remove ads on a free account either. See
+  [Known Limitations](#known-limitations).
 
 ## License
 
